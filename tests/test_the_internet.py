@@ -17,8 +17,11 @@ pytestmark = [pytest.mark.the_internet, allure.epic("The Internet"), pytest.mark
 def test_waits_for_dynamically_loaded_element(page: Page, example):
     page.goto(f"{config.INTERNET_URL}/dynamic_loading/{example}")
     page.locator("#start button").click()
-    # Explicit wait: the text appears after a loading bar; no sleep() anywhere.
-    expect(page.locator("#finish")).to_have_text("Hello World!", timeout=15_000)
+    # Explicit wait: wait until the result is VISIBLE (in example 1 the element is in the DOM
+    # from the start, so checking only its text would pass immediately). No sleep() anywhere.
+    finish = page.locator("#finish")
+    expect(finish).to_be_visible(timeout=15_000)
+    expect(finish).to_have_text("Hello World!")
     expect(page.locator("#loading")).to_be_hidden()
 
 
