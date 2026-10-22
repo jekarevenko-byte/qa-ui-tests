@@ -1,0 +1,134 @@
+name: UI Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 5 * * 1-5"   # weekdays 05:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ALLURE_VERSION: "2.32.0"
+
+jobs:
+  test:
+    name: Playwright tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies and Chromium
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Smoke tests (fast gate)
+        run: pytest -m smoke -n 2 --alluredir=allure-results-smoke
+
+      - name: Full suite
+        run: pytest -n 2
+
+      - name: Upload Allure results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-results
+          path: allure-results
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload screenshots and traces of failed tests
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-failures
+          path: test-results
+          if-no-files-found: ignore
+          retention-days: 14
+
+  allure-report:
+    name: Allure report
+    needs: test
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    concurrency:
+      group: allure-report-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: allure-results
+          path: allure-results
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Allure CLI
+        run: |
+          curl -sSfL "https://github.com/allure-framework/allure2/releases/download/${ALLURE_VERSION}/allure-${ALLURE_VERSION}.tgz" -o allure.tgz
+          tar -xzf allure.tgz -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/allure-${ALLURE_VERSION}/bin" >> "$GITHUB_PATH"
+
+      - name: Get previous report history (trend graphs)
+        if: github.event_name != 'pull_request'
+        run: |
+          git clone --depth 1 --branch gh-pages \
+            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" gh-pages || true
+          if [ -d gh-pages/history ]; then cp -r gh-pages/history allure-results/history; fi
+
+      - name: Generate report
+        run: allure generate allure-results --clean -o allure-report
+
+      - name: Job summary
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          s = json.load(open("allure-report/widgets/summary.json"))["statistic"]
+          print("## Allure report")
+          print()
+          print("| Passed | Failed | Broken | Skipped | Total |")
+          print("|---|---|---|---|---|")
+          print(f"| {s['passed']} | {s['failed']} | {s['broken']} | {s['skipped']} | {s['total']} |")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: allure-report
+          path: allure-report
+          retention-days: 14
+
+      - name: Publish to GitHub Pages (gh-pages branch)
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        run: |
+          set -e
+          cd gh-pages 2>/dev/null || {
+            mkdir gh-pages && cd gh-pages
+            git init -q -b gh-pages
+            git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          }
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -r ../allure-report/. .
+          touch .nojekyll
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Allure report for ${GITHUB_SHA::7} (run #${GITHUB_RUN_NUMBER})" || { echo "Nothing to publish"; exit 0; }
+          git push origin HEAD:gh-pages
