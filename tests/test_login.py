@@ -15,7 +15,7 @@ def test_valid_user_can_log_in(page: Page, login_page: LoginPage, username):
     login_page.login(username, config.PASSWORD)
     # performance_glitch_user is deliberately slow, so the wait is longer than the 5 s default
     expect(page).to_have_url(f"{config.SAUCE_URL}/inventory.html", timeout=20_000)
-    expect(InventoryPage(page).title).to_have_text("Products")
+    expect(InventoryPage(page).title).to_have_text("Products", timeout=20_000)
 
 
 @pytest.mark.negative
